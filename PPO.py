@@ -294,11 +294,19 @@ class BC_PPO_agent(PPO_agent):
 				surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv[index]
 				a_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
-				#BC predict actions
+				### BC predict actions ###
+
+				# MSE #
 				pred_action = self.actor.deterministic_act(obs_expt[index])
 
 				bc_loss = (action_expt[index] - pred_action).pow(2).mean()
 
+				# Log Prob #
+
+				#dist_e = self.actor.get_dist(obs_expt[index])
+				#logprob_e = dist_e.log_prob(action_expt[index]).sum(dim=1, keepdim=True)
+				#bc_loss = -self.bc_alpha * logprob_e.mean()
+				######
 				a_loss = (1.0-self.bc_alpha)*a_loss.mean() + bc_loss
 				self.actor_optimizer.zero_grad()
 				a_loss.backward()
