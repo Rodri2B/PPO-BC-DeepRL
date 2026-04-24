@@ -5,7 +5,7 @@ import torch
 import gymnasium as gym
 
 from utils import str2bool, Action_adapter, Reward_adapter, evaluate_policy
-from PPO import PPO_agent
+from PPO import PPO_agent, PPO_expert_agent,BC_PPO_agent
 
 import numpy as np
 import random
@@ -72,6 +72,7 @@ def main():
     opt.amplitude_action = opt.max_action-opt.min_action
     opt.max_steps = opt.T_horizon#envs.spec.max_episode_steps if (envs.spec.max_episode_steps <= opt.T_horizon) else opt.T_horizon
 
+    '''BC Setting'''
     opt.bc_alpha_o = 0.5**(1/opt.bc_half_lf)
     opt.bc_alpha = opt.bc_alpha_o
 
@@ -110,13 +111,17 @@ def main():
     #     kwargs["c_lr"] *= 4
 
     if not os.path.exists('model'): os.mkdir('model')
-    agent = PPO_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
+    agent = BC_PPO_agent(**vars(opt)) if opt.bc_expert_model != None else PPO_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
     if opt.Loadmodel: agent.load(BrifEnvName[opt.EnvIdex], opt.ModelIdex)
 
-    expert = None
+
+    '''BC Model Setting'''
+
     if opt.bc_expert_model != None:
-        expert = PPO_agent(**vars(opt))
+        expert = PPO_expert_agent(**vars(opt))
         expert.load(opt.bc_expert_model)
+
+        expert_envs = gym.make_vec(EnvName[opt.EnvIdex],num_envs=opt.num_envs, vectorization_mode="sync")
     #elif
         #load trajectories
 
@@ -129,6 +134,8 @@ def main():
         traj_lenth, total_steps = 0, 0
         while total_steps < opt.Max_train_steps:
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
+            if opt.bc_expert_model != None: obs_e, info = expert_envs.reset(seed=env_seed)
+            
             done = False
 
             '''Interact & trian'''
@@ -136,22 +143,36 @@ def main():
                 '''Interact with Env'''
                 action, logprob_a = agent.select_action(obs, deterministic=False) # use stochastic when training
                 act = Action_adapter(action,env_min_action,env_amplitude_action) #[0,1] to [-max,max]
-                next_obs, reward, terminations, truncations, infos = envs.step(act) # dw: dead&win; tr: truncated
+                next_obs, reward, terminations, truncations, infos = envs.step(act) # dw: dead&win; tr: truncated                
                 #reward = Reward_adapter(reward, opt.EnvIdex)
                 #done = (terminations or truncations)
-                #print(truncations.shape)
+                #print(truncations.shape)     
+
                 dones = np.logical_or(terminations, truncations)
                 done = np.all(dones)
                 '''Store the current transition'''
                 agent.put_data(obs, action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
                 obs = next_obs
 
+
+                if opt.bc_expert_model != None: 
+                    action_e, logprob_a_e = expert.select_action(obs_e, deterministic=True)
+                    act_e = Action_adapter(action_e,env_min_action,env_amplitude_action) #[0,1] to [-max,max]
+                    next_obs_e, reward_e, terminations_e, truncations_e, infos = expert_envs.step(act_e) # dw: dead&win; tr: truncated  
+                    dones_e = np.logical_or(terminations_e, truncations_e)
+                    expert.put_data(obs_e, action_e, next_obs_e, dones_e, terminations_e, idx = traj_lenth)
+                    obs_e = next_obs_e
+
+
                 traj_lenth += 1
                 total_steps += 1
 
                 '''Update if its time'''
                 if traj_lenth % opt.T_horizon == 0:
-                    agent.train()
+                    if opt.bc_expert_model != None:
+                        agent.train(expert.obs_hoder,expert.action_hoder)
+                    else:
+                        agent.train()
                     traj_lenth = 0
 
                 '''Record & log'''
@@ -172,6 +193,7 @@ def main():
                 env_seed += 1 
 
         envs.close()
+        if opt.bc_expert_model != None: expert_envs.close()
         env.close()
         eval_env.close()
 
