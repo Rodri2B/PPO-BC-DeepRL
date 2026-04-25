@@ -279,8 +279,15 @@ class BC_PPO_agent(PPO_agent):
 			logprob_a = logprob_a[perm]
 
 			#expert
-			obs_expt = obs_expt[perm]
-			action_expt = action_expt[perm]
+			perm = np.arange(obs_expt.shape[0])
+			np.random.shuffle(perm)
+			perm = torch.LongTensor(perm).to(self.dvc)
+			if obs_expt.shape[0] > self.T_horizon:
+				obs_expt = obs_expt[perm[0:self.T_horizon]]
+				action_expt = action_expt[perm[0:self.T_horizon]]
+			else:
+				obs_expt = obs_expt[perm]
+				action_expt = action_expt[perm]
 
 			'''update the actor'''
 			for i in range(a_optim_iter_num):
@@ -295,7 +302,7 @@ class BC_PPO_agent(PPO_agent):
 				a_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
 				### BC predict actions ###
-
+				index = slice(i * self.a_optim_batch_size, min((i + 1) * self.a_optim_batch_size, obs_expt.shape[0]))
 				# MSE #
 				pred_action = self.actor.deterministic_act(obs_expt[index])
 
@@ -341,11 +348,11 @@ class PPO_expert_agent(object):
 		elif self.Distribution == 'GS_m':
 			self.actor = GaussianActor_mu(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
 		else: print('Dist Error')
-		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.a_lr)
+		#self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.a_lr)
 
 		# Build Critic
 		self.critic = Critic(self.state_dim, self.net_width).to(self.dvc)
-		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.c_lr)
+		#self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.c_lr)
 
 		# Build Trajectory holder
 		self.obs_hoder = np.zeros((self.T_horizon, self.num_envs,self.state_dim),dtype=np.float32)

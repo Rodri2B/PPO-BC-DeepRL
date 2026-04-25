@@ -9,7 +9,25 @@ from PPO import PPO_agent, PPO_expert_agent,BC_PPO_agent
 
 import numpy as np
 import random
+import h5py
 
+
+def load_in_chunks(batch_size,filename):
+    with h5py.File(filename, "r") as f:
+        data = f["data"]
+        total_size = data.shape[0]
+
+        for i in range(0, total_size, batch_size):
+            yield data[i:i+batch_size]
+
+def load_in_random_chunks(batch_size,filename):
+    with h5py.File(filename, "r") as f:
+        data = f["data"]
+        idx = np.random.permutation(data.shape[0])
+
+        for i in range(0, len(idx), batch_size):
+            batch_idx = idx[i:i+batch_size]
+            yield data[batch_idx]
 
 '''Hyperparameter Setting'''
 parser = argparse.ArgumentParser()
@@ -49,8 +67,9 @@ parser.add_argument('--entropy_coef_decay', type=float, default=0.99, help='Deca
 parser.add_argument('--bc_expert_model', type=str, default=None, help='Behaviour cloning expert model name')
 parser.add_argument('--bc_half_lf', type=float, default=5, help='Behaviour cloning factor half life')
 
-parser.add_argument('--expert_traj', type=float, default=5, help='Expert trajectories main name')
-parser.add_argument('--expert_traj_number', type=float, default=5, help='Number of expert trajectories')
+parser.add_argument('--load_train_data', type=str2bool, default=False, help='Load expert trajectories')
+parser.add_argument('--expert_traj', type=str, default=None, help='Expert trajectories main name')
+#parser.add_argument('--expert_traj_number', type=float, default=5, help='Number of expert trajectories')
 
 opt = parser.parse_args()
 opt.dvc = torch.device(opt.dvc) # from str to torch.device
@@ -111,31 +130,67 @@ def main():
     #     kwargs["c_lr"] *= 4
 
     if not os.path.exists('model'): os.mkdir('model')
-    agent = BC_PPO_agent(**vars(opt)) if opt.bc_expert_model != None else PPO_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
+    agent = BC_PPO_agent(**vars(opt)) if (opt.bc_expert_model != None or opt.load_train_data) else PPO_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
     if opt.Loadmodel: agent.load(BrifEnvName[opt.EnvIdex], opt.ModelIdex)
 
 
     '''BC Model Setting'''
 
-    if opt.bc_expert_model != None:
+    if opt.bc_expert_model != None and ~opt.load_train_data:
         expert = PPO_expert_agent(**vars(opt))
         expert.load(opt.bc_expert_model)
 
         expert_envs = gym.make_vec(EnvName[opt.EnvIdex],num_envs=opt.num_envs, vectorization_mode="sync")
-    #elif
-        #load trajectories
+    elif opt.load_train_data: 
+        assert opt.expert_traj != None, "Trajectory data not specified!"
+        expt_traj_filename = "expert_traj/"+opt.expert_traj
 
+        #with h5py.File(expt_traj_filename, "r") as f:
+            #expert_data = f["data"]
+        h5file = h5py.File(expt_traj_filename, "r")
+        expert_data = h5file["data"]
+
+        entire_dataset_loaded = False
+        if expert_data.shape[0] < 500*opt.T_horizon:
+            expt_obs_dataset = expert_data[:, :opt.state_dim]
+            expt_action_dataset = expert_data[:, opt.state_dim:]
+            entire_dataset_loaded = True
+        else:
+            expert_batch_size = min(20,int(expert_data.shape[0]/opt.T_horizon))*opt.T_horizon
+            e_rand_idx = np.random.permutation(expert_data.shape[0])
+            e_batch_max_steps = int(expert_data.shape[0]/expert_batch_size)
+            e_batch_step = 0
+            
+
+
+
+    
     if opt.render:
         while True:
             ep_r = evaluate_policy(env, agent, device, env_min_action,env_amplitude_action, 1,seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
     else:
+
+        done_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+        #termination_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+
+        #if opt.bc_expert_model != None: 
+        #    done_hist_e = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+        #    termination_hist_e = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+
         local_counter=0
         traj_lenth, total_steps = 0, 0
         while total_steps < opt.Max_train_steps:
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
-            if opt.bc_expert_model != None: obs_e, info = expert_envs.reset(seed=env_seed)
-            
+            if opt.bc_expert_model != None and ~opt.load_train_data: obs_e, info = expert_envs.reset(seed=env_seed)
+            elif opt.load_train_data and (not entire_dataset_loaded):
+                
+                expert_index = slice(e_batch_step * expert_batch_size, min((e_batch_step + 1) * expert_batch_size, expert_data.shape[0]))
+                expt_obs_dataset = expert_data[e_rand_idx[expert_index], :opt.state_dim]
+                expt_action_dataset = expert_data[e_rand_idx[expert_index], opt.state_dim:]
+                e_batch_step += 1
+                e_batch_step %= e_batch_max_steps
+
             done = False
 
             '''Interact & trian'''
@@ -149,28 +204,45 @@ def main():
                 #print(truncations.shape)     
 
                 dones = np.logical_or(terminations, truncations)
-                done = np.all(dones)
+                done_hist = np.logical_or(done_hist,dones)
+
+                #termination_hist = np.logical_or(termination_hist, terminations)
+
                 '''Store the current transition'''
                 agent.put_data(obs, action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
+                #agent.put_data(obs, action, reward, next_obs, logprob_a, done_hist, termination_hist, idx = traj_lenth)
                 obs = next_obs
 
 
-                if opt.bc_expert_model != None: 
+                if opt.bc_expert_model != None and ~opt.load_train_data: 
                     action_e, logprob_a_e = expert.select_action(obs_e, deterministic=True)
                     act_e = Action_adapter(action_e,env_min_action,env_amplitude_action) #[0,1] to [-max,max]
                     next_obs_e, reward_e, terminations_e, truncations_e, infos = expert_envs.step(act_e) # dw: dead&win; tr: truncated  
                     dones_e = np.logical_or(terminations_e, truncations_e)
+                    #done_hist_e = np.logical_or(done_hist_e,dones_e)
+                    #termination_hist_e = np.logical_or(termination_hist_e, terminations_e)
                     expert.put_data(obs_e, action_e, next_obs_e, dones_e, terminations_e, idx = traj_lenth)
+                    #expert.put_data(obs_e, action_e, next_obs_e, done_hist_e, termination_hist_e, idx = traj_lenth)
                     obs_e = next_obs_e
 
+                if np.all(done_hist):
+                    done = True
+                    done_hist[0][:] = False
+                    #termination_hist[0][:] = False
+                    #done_hist_e[0][:] = False
+                    #termination_hist_e[0][:] = False
+                    #done_hist.fill(0)
+                #done = np.all(dones)
 
                 traj_lenth += 1
                 total_steps += 1
 
                 '''Update if its time'''
                 if traj_lenth % opt.T_horizon == 0:
-                    if opt.bc_expert_model != None:
+                    if opt.bc_expert_model != None and ~opt.load_train_data:
                         agent.train(expert.obs_hoder,expert.action_hoder)
+                    elif opt.load_train_data:
+                        agent.train(expt_obs_dataset,expt_action_dataset)
                     else:
                         agent.train()
                     traj_lenth = 0
@@ -193,7 +265,7 @@ def main():
                 env_seed += 1 
 
         envs.close()
-        if opt.bc_expert_model != None: expert_envs.close()
+        if opt.bc_expert_model != None and ~opt.load_train_data: expert_envs.close()
         env.close()
         eval_env.close()
 
