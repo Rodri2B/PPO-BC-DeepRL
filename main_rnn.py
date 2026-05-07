@@ -176,6 +176,7 @@ def main():
         while True:
             ep_r = evaluate_policy(env, agent, device, env_min_action,env_amplitude_action, 1,seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
+#####################################
     else:
 
         done_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
@@ -187,8 +188,13 @@ def main():
 
         local_counter=0
         traj_lenth, total_steps = 0, 0
+
         while total_steps < opt.Max_train_steps:
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
+
+            last_hidden_state=torch.zeros(shape=(opt.layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
+            past_action=np.full(fill_value=0.5,shape=(1,opt.num_envs,opt.action_dim),dtype=np.float32,device='cpu')
+
             if opt.bc_expert_model != None and ~opt.load_train_data: obs_e, info = expert_envs.reset(seed=env_seed)
             elif opt.load_train_data and (not entire_dataset_loaded):
                 
@@ -203,7 +209,7 @@ def main():
             '''Interact & trian'''
             while not done:
                 '''Interact with Env'''
-                action, logprob_a = agent.select_action(obs, deterministic=False) # use stochastic when training
+                action, logprob_a ,hidden_st= agent.select_action(obs,last_hidden_state, deterministic=False) # use stochastic when training
                 act = Action_adapter(action,env_min_action,env_amplitude_action) #[0,1] to [-max,max]
                 next_obs, reward, terminations, truncations, infos = envs.step(act) # dw: dead&win; tr: truncated                
                 #reward = Reward_adapter(reward, opt.EnvIdex)
@@ -216,8 +222,11 @@ def main():
                 #termination_hist = np.logical_or(termination_hist, terminations)
 
                 '''Store the current transition'''
-                agent.put_data(obs, action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
+                agent.put_data(obs,past_action,action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
                 #agent.put_data(obs, action, reward, next_obs, logprob_a, done_hist, termination_hist, idx = traj_lenth)
+
+
+                past_action = action
                 obs = next_obs
 
 
@@ -253,7 +262,7 @@ def main():
                     else:
                         agent.train()
                     traj_lenth = 0
-
+##############################################
                 '''Record & log'''
                 if total_steps % opt.eval_interval == 0:
                     avg_ep_reward = evaluate_policy(eval_env, agent,device, env_min_action,env_amplitude_action, episodes_num=opt.evaluation_rollouts_num,seed_number=seed_number,e_seed=env_seed)  # evaluate the policy for 3 times, and get averaged result
