@@ -142,9 +142,24 @@ def main():
         entire_dataset_loaded = False
         if expert_data.shape[0] < 500*opt.T_horizon:
             expt_obs_dataset = expert_data[:,:, :opt.state_dim]
-            expt_past_action_dataset = expert_data[:,:, opt.state_dim:opt.action_dim]
+            expt_past_action_dataset = expert_data[:,:, opt.state_dim:(opt.state_dim+opt.action_dim)]
             expt_action_dataset = expert_data[:,:, (opt.state_dim+opt.action_dim):]
             entire_dataset_loaded = True
+
+            trajectory_data_hist = []
+            #bached_traj_start = 0
+            for traj_e in expert_trajs_lims:
+
+                start = traj_e[0]
+                #end = traj_e[1]+1
+
+                #traj_size = end-start
+
+                #trajectory_data_hist.append(bached_traj_start)
+                trajectory_data_hist.append(start)
+
+                #bached_traj_start += traj_size
+
         else:
             #expert_batch_size = min(20,int(expert_data.shape[0]/opt.T_horizon))*opt.T_horizon
             #e_rand_idx = np.random.permutation(expert_data.shape[0])
@@ -164,6 +179,7 @@ def main():
                 expert_trajbatch_size -= 1
 
             e_trajrand_idx = np.random.permutation(expert_trajs_lims.shape[0])
+            e_trajbatch_max_steps = int(expert_trajs_lims.shape[0]/expert_trajbatch_size)
             e_trajbatch_step = 0
 
 
@@ -179,12 +195,17 @@ def main():
 #####################################
     else:
 
-        done_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+        done_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool)
+
+        trajectory_hist = []
         #termination_hist = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
 
         #if opt.bc_expert_model != None: 
         #    done_hist_e = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
         #    termination_hist_e = np.zeros(shape=(1,opt.num_envs),dtype=bool,device='cpu')
+
+        if opt.bc_expert_model != None and ~opt.load_train_data: 
+            past_action_expt_hoder = np.zeros((opt.T_horizon, opt.num_envs,opt.action_dim),dtype=np.float32)
 
         local_counter=0
         traj_lenth, total_steps = 0, 0
@@ -193,16 +214,52 @@ def main():
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
 
             last_hidden_state=torch.zeros(shape=(opt.layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
-            past_action=np.full(fill_value=0.5,shape=(1,opt.num_envs,opt.action_dim),dtype=np.float32,device='cpu')
+            past_action=np.full(fill_value=0.5,shape=(1,opt.num_envs,opt.action_dim),dtype=np.float32)
 
-            if opt.bc_expert_model != None and ~opt.load_train_data: obs_e, info = expert_envs.reset(seed=env_seed)
+            if (traj_lenth > 0):trajectory_hist.append(traj_lenth)
+
+            if opt.bc_expert_model != None and ~opt.load_train_data: 
+                train_past_action_T = past_action.copy()
+                obs_e, info = expert_envs.reset(seed=env_seed)
+
             elif opt.load_train_data and (not entire_dataset_loaded):
-                
-                expert_index = slice(e_batch_step * expert_batch_size, min((e_batch_step + 1) * expert_batch_size, expert_data.shape[0]))
-                expt_obs_dataset = expert_data[e_rand_idx[expert_index], :opt.state_dim]
-                expt_action_dataset = expert_data[e_rand_idx[expert_index], opt.state_dim:]
-                e_batch_step += 1
-                e_batch_step %= e_batch_max_steps
+
+                expert_traj_index = slice(e_trajbatch_step * expert_trajbatch_size, min((e_trajbatch_step + 1) * expert_trajbatch_size, expert_trajs_lims.shape[0]))
+                bached_traj_start = 0
+                trajectory_data_hist = []
+
+                #calculate toltal size
+                trajs_total_size = 0
+                for traj_e in e_trajrand_idx[expert_traj_index]:
+                    start = traj_e[0]
+                    end = traj_e[1]+1
+                    traj_size = end-start
+
+                    trajs_total_size += traj_size
+
+                expt_obs_dataset=np.zeros(shape=(trajs_total_size,expert_data.shape[1],opt.state_dim),dtype=np.float32)
+                expt_past_action_dataset=np.zeros(shape=(trajs_total_size,expert_data.shape[1],opt.action_dim),dtype=np.float32)
+                expt_action_dataset=np.zeros(shape=(trajs_total_size,expert_data.shape[1],opt.action_dim),dtype=np.float32)
+
+                for traj_e in e_trajrand_idx[expert_traj_index]:
+
+                    start = traj_e[0]
+                    end = traj_e[1]+1
+
+                    traj_size = end-start
+                    bached_traj_end = bached_traj_start+traj_size
+
+
+                    expt_obs_dataset[bached_traj_start:bached_traj_end, :, :opt.state_dim] = expert_data[start:end, :, :opt.state_dim]
+                    expt_past_action_dataset[bached_traj_start:bached_traj_end, :, :opt.action_dim] = expert_data[start:end, :, opt.state_dim:(opt.state_dim+opt.action_dim)]
+                    expt_action_dataset[bached_traj_start:bached_traj_end, :, :opt.action_dim] = expert_data[start:end, :, (opt.state_dim+opt.action_dim):]
+
+                    trajectory_data_hist.append(bached_traj_start)
+
+                    bached_traj_start += traj_size
+
+                e_trajbatch_step += 1
+                e_trajbatch_step %= e_trajbatch_max_steps
 
             done = False
 
@@ -222,10 +279,10 @@ def main():
                 #termination_hist = np.logical_or(termination_hist, terminations)
 
                 '''Store the current transition'''
-                agent.put_data(obs,past_action,action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
+                agent.put_data(obs,last_hidden_state,past_action,action, reward, next_obs, logprob_a, dones, terminations, idx = traj_lenth)
                 #agent.put_data(obs, action, reward, next_obs, logprob_a, done_hist, termination_hist, idx = traj_lenth)
 
-
+                last_hidden_state = hidden_st
                 past_action = action
                 obs = next_obs
 
@@ -237,8 +294,13 @@ def main():
                     dones_e = np.logical_or(terminations_e, truncations_e)
                     #done_hist_e = np.logical_or(done_hist_e,dones_e)
                     #termination_hist_e = np.logical_or(termination_hist_e, terminations_e)
+
+                    past_action_expt_hoder[traj_lenth] = train_past_action_T
+
                     expert.put_data(obs_e, action_e, next_obs_e, dones_e, terminations_e, idx = traj_lenth)
                     #expert.put_data(obs_e, action_e, next_obs_e, done_hist_e, termination_hist_e, idx = traj_lenth)
+
+                    train_past_action_T = action_e
                     obs_e = next_obs_e
 
                 if np.all(done_hist):
@@ -256,12 +318,14 @@ def main():
                 '''Update if its time'''
                 if traj_lenth % opt.T_horizon == 0:
                     if opt.bc_expert_model != None and ~opt.load_train_data:
-                        agent.train(expert.obs_hoder,expert.action_hoder)
+                        agent.train(expert.obs_hoder,expert.action_hoder,past_action_expt_hoder,trajectory_hist,trajectory_hist)
                     elif opt.load_train_data:
-                        agent.train(expt_obs_dataset,expt_action_dataset)
+                        agent.train(expt_obs_dataset,expt_action_dataset,expt_past_action_dataset,trajectory_hist,trajectory_data_hist)
                     else:
-                        agent.train()
+                        agent.train(trajectory_hist)
                     traj_lenth = 0
+                    trajectory_hist.clear()
+                    trajectory_hist.append(traj_lenth)
 ##############################################
                 '''Record & log'''
                 if total_steps % opt.eval_interval == 0:

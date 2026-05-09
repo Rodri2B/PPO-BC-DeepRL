@@ -365,6 +365,7 @@ class PPO_RNN_agent(object):
 		#self.termination_hoder = np.zeros((self.T_horizon, 1),dtype=np.bool_)
 		
 		self.obs_hoder = np.zeros((self.T_horizon, self.num_envs,self.state_dim),dtype=np.float32)
+		self.last_hidden_state_hoder = np.zeros((self.T_horizon, self.num_envs,self.hidden_state_dim),dtype=np.float32)
 		self.past_action_hoder = np.zeros((self.T_horizon, self.num_envs,self.action_dim),dtype=np.float32)
 		self.action_hoder = np.zeros((self.T_horizon, self.num_envs,self.action_dim),dtype=np.float32)
 		self.reward_hoder = np.zeros((self.T_horizon, self.num_envs, 1),dtype=np.float32)
@@ -400,6 +401,7 @@ class PPO_RNN_agent(object):
 
 		'''Prepare PyTorch data from Numpy data'''
 		obs = torch.from_numpy(self.obs_hoder).to(self.dvc)
+		last_hidden_state = torch.from_numpy(self.last_hidden_state_hoder).to(self.dvc)
 		past_action = torch.from_numpy(self.past_action_hoder).to(self.dvc)
 		action = torch.from_numpy(self.action_hoder).to(self.dvc)
 		reward = torch.from_numpy(self.reward_hoder).to(self.dvc)
@@ -498,9 +500,10 @@ class PPO_RNN_agent(object):
 				c_loss.backward()
 				self.critic_optimizer.step()
 
-	def put_data(self, obs, past_action, action, reward, next_obs, logprob_a, done, termination, idx):
+	def put_data(self, obs, last_hidden_state, past_action, action, reward, next_obs, logprob_a, done, termination, idx):
 
 		self.obs_hoder[idx] = obs
+		self.last_hidden_state_hoder[idx] = last_hidden_state
 		self.past_action_hoder[idx] = past_action
 		self.action_hoder[idx] = action
 
