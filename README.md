@@ -1,5 +1,5 @@
 # PPO+BC for Continuous Environments
-This is a simple implementation of an algorithm that fuses PPO and Behaviour Cloning for Deep RL. The project was heavily based on [PPO-Continuous-Pytorch](https://github.com/XinJingHao/PPO-Continuous-Pytorch) which was originally implemented only for PPO in continuous environments.
+This is a simple implementation of an algorithm that fuses PPO and Behaviour Cloning for Deep RL. The project was mainly based on [PPO-Continuous-Pytorch](https://github.com/XinJingHao/PPO-Continuous-Pytorch) which was originally implemented only for PPO in continuous environments.
 
 ## Dependencies
 ```python
