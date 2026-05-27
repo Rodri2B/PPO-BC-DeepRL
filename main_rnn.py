@@ -4,8 +4,8 @@ import argparse
 import torch
 import gymnasium as gym
 
-from utils import str2bool, Action_adapter, Reward_adapter, evaluate_policy
-from PPO import PPO_agent, PPO_expert_agent,BC_PPO_agent
+from utils import str2bool, Action_adapter, Reward_adapter, evaluate_policy_rnn
+from PPO import PPO_agent, PPO_expert_agent,BC_PPO_agent,PPO_RNN_agent
 
 import numpy as np
 import random
@@ -54,6 +54,8 @@ parser.add_argument('--bc_expert_model', type=str, default=None, help='Behaviour
 parser.add_argument('--bc_half_lf', type=float, default=5, help='Behaviour cloning factor half life')
 
 parser.add_argument('--rnn_sequence_length', type=int, default=10, help='Define RNN sequence length during training')
+parser.add_argument('--hidden_state_dim', type=int, default=10, help='Define RNN hidden state dimension')
+parser.add_argument('--rnn_layers_num', type=int, default=10, help='Define RNN number of layers')
 
 parser.add_argument('--load_train_data', type=str2bool, default=False, help='Load expert trajectories')
 parser.add_argument('--expert_traj', type=str, default=None, help='Expert trajectories main name')
@@ -118,7 +120,8 @@ def main():
     #     kwargs["c_lr"] *= 4
 
     if not os.path.exists('model'): os.mkdir('model')
-    agent = BC_PPO_RNN_agent(**vars(opt)) if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
+    agent = None if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt))
+    #agent = BC_PPO_RNN_agent(**vars(opt)) if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
     if opt.Loadmodel: agent.load(BrifEnvName[opt.EnvIdex], opt.ModelIdex)
 
 
@@ -190,7 +193,9 @@ def main():
     
     if opt.render:
         while True:
-            ep_r = evaluate_policy(env, agent, device, env_min_action,env_amplitude_action, 1,seed_number=seed_number,e_seed=env_seed)
+            last_hidden_state_eval=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
+            past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
+            ep_r = evaluate_policy_rnn(env, agent, device, env_min_action,env_amplitude_action, 1,past_action_eval,last_hidden_state_eval,seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
 #####################################
     else:
@@ -213,8 +218,8 @@ def main():
         while total_steps < opt.Max_train_steps:
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
 
-            last_hidden_state=torch.zeros(shape=(opt.layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
-            past_action=np.full(fill_value=0.5,shape=(1,opt.num_envs,opt.action_dim),dtype=np.float32)
+            last_hidden_state=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
+            past_action=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
 
             if (traj_lenth > 0):trajectory_hist.append(traj_lenth)
 
@@ -266,7 +271,9 @@ def main():
             '''Interact & trian'''
             while not done:
                 '''Interact with Env'''
-                action, logprob_a ,hidden_st= agent.select_action(obs,last_hidden_state, deterministic=False) # use stochastic when training
+                state_past_action = np.concatenate([obs,past_action], axis=-1)
+                action_v, logprob_a ,hidden_st= agent.select_action(state_past_action,last_hidden_state, deterministic=False) # use stochastic when training
+                action = action_v[-1,:,:]
                 act = Action_adapter(action,env_min_action,env_amplitude_action) #[0,1] to [-max,max]
                 next_obs, reward, terminations, truncations, infos = envs.step(act) # dw: dead&win; tr: truncated                
                 #reward = Reward_adapter(reward, opt.EnvIdex)
@@ -329,7 +336,9 @@ def main():
 ##############################################
                 '''Record & log'''
                 if total_steps % opt.eval_interval == 0:
-                    avg_ep_reward = evaluate_policy(eval_env, agent,device, env_min_action,env_amplitude_action, episodes_num=opt.evaluation_rollouts_num,seed_number=seed_number,e_seed=env_seed)  # evaluate the policy for 3 times, and get averaged result
+                    last_hidden_state_eval=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
+                    past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
+                    avg_ep_reward = evaluate_policy_rnn(eval_env, agent,device, env_min_action,env_amplitude_action, episodes_num=opt.evaluation_rollouts_num,first_p_act=past_action_eval ,h_0=last_hidden_state_eval , seed_number=seed_number,e_seed=env_seed)  # evaluate the policy for 3 times, and get averaged result
                     if opt.write: writer.add_scalar('ep_r', avg_ep_reward, global_step=total_steps)
                     print(' EnvName:',EnvName[opt.EnvIdex],'seed:',opt.seed,'steps: {}k'.format(int(total_steps/1000)),'avg episode rw:', avg_ep_reward)
 

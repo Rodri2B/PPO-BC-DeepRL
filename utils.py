@@ -5,6 +5,7 @@ from torch.distributions import Beta,Normal
 import random
 
 
+
 class BetaActor(nn.Module):
 	def __init__(self, state_dim, action_dim, net_width):
 		super(BetaActor, self).__init__()
@@ -30,6 +31,40 @@ class BetaActor(nn.Module):
 
 	def deterministic_act(self, state):
 		alpha, beta = self.forward(state)
+		mode = (alpha) / (alpha + beta)
+		return mode
+
+class RNNBetaActor(nn.Module):
+	def __init__(self, state_dim, action_dim, hidden_size,num_layers=2):
+		super(BetaActor, self).__init__()
+
+        # GRU layer
+		self.gru = nn.GRU(input_size=state_dim+action_dim,
+		                  hidden_size=hidden_size,
+		                  num_layers=num_layers,
+		                  batch_first=False)
+        
+        # Output layer
+		self.alpha_head = nn.Linear(hidden_size, action_dim)
+		self.beta_head = nn.Linear(hidden_size, action_dim)
+
+	def forward(self, state_past_action,last_hiden):
+		gru_out, h_n = self.gru(input=state_past_action,h_0=last_hiden)
+		# Take output from last time step
+		last_output = gru_out[:, :, :]
+
+		alpha = F.softplus(self.alpha_head(last_output)) + 1.0
+		beta = F.softplus(self.beta_head(last_output)) + 1.0
+
+		return alpha,beta,h_n
+
+	def get_dist(self,state_past_action,last_hiden):
+		alpha,beta,hidden_state = self.forward(state_past_action, last_hiden)
+		dist = Beta(alpha, beta)
+		return dist, hidden_state
+
+	def deterministic_act(self, state_past_action, last_hiden):
+		alpha, beta, _ = self.forward(state_past_action, last_hiden)
 		mode = (alpha) / (alpha + beta)
 		return mode
 
@@ -144,5 +179,31 @@ def evaluate_policy(env, agent,device, min_action,amplitude_action, episodes_num
 
 			total_scores += reward
 			obs = next_obs
+
+	return total_scores/episodes_num
+
+import numpy as np
+
+def evaluate_policy_rnn(env, agent,device, min_action,amplitude_action, episodes_num,first_p_act,h_0,seed_number=None,e_seed=None):
+	total_scores = 0
+	for j in range(episodes_num):
+		
+		last_hidden_state=h_0
+		past_action=first_p_act
+
+		obs, info = env.reset() if (seed_number==None) else (env.reset()if (e_seed==None) else env.reset(seed=random.randint(e_seed,e_seed+seed_number-1)))
+		done = False
+		while not done:
+			state_past_action = np.concatenate([obs,past_action], axis=-1)
+			action_v, logprob_a, hidden_state = agent.select_action(state_past_action,last_hidden_state, deterministic=True) # Take deterministic actions when evaluation
+			action = action_v[-1,:,:]
+			act = Action_adapter(action, min_action,amplitude_action)  # [0,1] to [-max,max]
+			next_obs, reward, termination, truncation, info = env.step(act)
+			done = (termination or truncation)
+
+			total_scores += reward
+			obs = next_obs
+			past_action = action
+			last_hidden_state = hidden_state
 
 	return total_scores/episodes_num

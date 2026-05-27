@@ -1,4 +1,4 @@
-from utils import BetaActor, GaussianActor_musigma, GaussianActor_mu, Critic
+from utils import BetaActor, GaussianActor_musigma, GaussianActor_mu, Critic, RNNBetaActor
 import numpy as np
 import copy
 import torch
@@ -341,11 +341,11 @@ class PPO_RNN_agent(object):
 
 		# Choose distribution for the actor
 		if self.Distribution == 'Beta':
-			self.actor = BetaActor(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
-		elif self.Distribution == 'GS_ms':
-			self.actor = GaussianActor_musigma(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
-		elif self.Distribution == 'GS_m':
-			self.actor = GaussianActor_mu(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
+			self.actor = RNNBetaActor(self.state_dim, self.action_dim, self.hidden_size, self.rnn_num_layers).to(self.dvc)
+		#elif self.Distribution == 'GS_ms':
+		#	self.actor = GaussianActor_musigma(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
+		#elif self.Distribution == 'GS_m':
+		#	self.actor = GaussianActor_mu(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
 		else: print('Dist Error')
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.a_lr)
 
@@ -365,7 +365,7 @@ class PPO_RNN_agent(object):
 		#self.termination_hoder = np.zeros((self.T_horizon, 1),dtype=np.bool_)
 		
 		self.obs_hoder = np.zeros((self.T_horizon, self.num_envs,self.state_dim),dtype=np.float32)
-		self.last_hidden_state_hoder = np.zeros((self.T_horizon, self.num_envs,self.hidden_state_dim),dtype=np.float32)
+		self.last_hidden_state_hoder = np.zeros((self.T_horizon, self.rnn_layers_num,self.num_envs,self.hidden_state_dim),dtype=np.float32)
 		self.past_action_hoder = np.zeros((self.T_horizon, self.num_envs,self.action_dim),dtype=np.float32)
 		self.action_hoder = np.zeros((self.T_horizon, self.num_envs,self.action_dim),dtype=np.float32)
 		self.reward_hoder = np.zeros((self.T_horizon, self.num_envs, 1),dtype=np.float32)
@@ -375,28 +375,28 @@ class PPO_RNN_agent(object):
 		self.termination_hoder = np.zeros((self.T_horizon, self.num_envs, 1),dtype=np.bool_)
 
 
-	def select_action(self, state, deterministic):
+	def select_action(self, state_past_action,last_hiden, deterministic):
 		with torch.no_grad():
 			#state = torch.FloatTensor(state.reshape(1, -1)).to(self.dvc)
-			state = torch.FloatTensor(state).to(self.dvc)
+			state_past_action = torch.FloatTensor(state_past_action).unsqueeze(0).to(self.dvc)
 			if deterministic:
 				# only used when evaluate the policy.Making the performance more stable
-				action = self.actor.deterministic_act(state)
+				action = self.actor.deterministic_act(state_past_action,last_hiden)
 				#return action.cpu().numpy()[0], None  # action is in shape (adim, 0)
 				return action.cpu().numpy(), None # (num_envs, action_dim)
 
 			else:
 				# only used when interact with the env
-				dist = self.actor.get_dist(state)
+				dist, hidden_state = self.actor.get_dist(state_past_action,last_hiden)
 				action = dist.sample()
 				action = torch.clamp(action, 0, 1) #remove if needed
 				#logprob_a = dist.log_prob(action).cpu().numpy().flatten()
 				logprob_a = dist.log_prob(action).cpu().numpy()
 				#return action.cpu().numpy()[0], logprob_a # both are in shape (adim, 0)
-				return action.cpu().numpy(), logprob_a # both are in shape (num_envs, adim)
+				return action.cpu().numpy(), logprob_a, hidden_state.cpu().numpy() # both are in shape (num_envs, adim)
 
 
-	def train(self, ):
+	def train(self, trajectory_hist):
 		self.entropy_coef*=self.entropy_coef_decay
 
 		'''Prepare PyTorch data from Numpy data'''
@@ -444,43 +444,132 @@ class PPO_RNN_agent(object):
 			td_target = adv + vs
 			adv = (adv - adv.mean()) / ((adv.std()+1e-4))  #sometimes helps #all samples
 			#or adv = (adv - adv.mean(dim=0, keepdim=True)) / (adv.std(dim=0, keepdim=True) + 1e-4) # per env normalization
+		
 
+		# For Critic
 		# from (T, N, dim) → (T*N, dim)
-		obs = obs.reshape(-1, obs.shape[-1])
-		action = action.reshape(-1, action.shape[-1])
-		td_target = td_target.reshape(-1, 1)
-		adv = adv.reshape(-1, 1)
-		logprob_a = logprob_a.reshape(-1, logprob_a.shape[-1])
+		obs_critic = obs.clone().reshape(-1, obs.shape[-1])
+		action_critic = action.clone().reshape(-1, action.shape[-1])
+		td_target_critic = td_target.clone().reshape(-1, 1)
+		adv_critic = adv.clone().reshape(-1, 1)
+		logprob_a_critic = logprob_a.clone().reshape(-1, logprob_a.shape[-1])
+
+
+		# Pre-Allocate Memory
+		acumulative_index=0
+		for traj_index in range(0,len(trajectory_hist)):
+			if(traj_size%self.rnn_sequence_length==0 and traj_size>=self.rnn_sequence_length):
+				acumulative_index+=traj_size/self.rnn_sequence_length
+			elif(traj_size>self.rnn_sequence_length):
+				acumulative_index+=math.floor(traj_size/self.rnn_sequence_length)+1
+		acumulative_index*=self.num_envs
+
+		obs_past_act_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.state_dim+self.action_dim),dtype=torch.float32,device=self.dvc)
+		action_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
+		adv_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,1),dtype=torch.float32,device=self.dvc)
+		logprob_a_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
+		last_hidden_state_actor = torch.zeros(shape=(self.rnn_layers_num,acumulative_index,self.hidden_state_dim),dtype=torch.float32,device=self.dvc)
+
+		# For Actor
+		acumulative_index=0
+		for traj_index in range(0,len(trajectory_hist)):
+			traj_start = trajectory_hist[traj_index]
+			traj_end = trajectory_hist[traj_index+1] if (traj_index < (len(trajectory_hist)-1)) else self.T_horizon
+			traj_size = traj_end-traj_start
+
+			if(traj_size%self.rnn_sequence_length==0 and traj_size>=self.rnn_sequence_length):
+				for sequence_index in range(0,traj_size/self.rnn_sequence_length):
+					#np.concatenate([obs,past_action], axis=-1)
+					first_index_start = acumulative_index*self.num_envs
+					first_index_end = (acumulative_index+1)*self.num_envs
+					second_index_start = traj_start+sequence_index*self.rnn_sequence_length
+					second_index_end = traj_start+(sequence_index+1)*self.rnn_sequence_length
+
+					obs_past_act_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = \
+					torch.cat([obs[second_index_start:second_index_end],
+							   past_action[second_index_start:second_index_end]], dim=-1)
+
+					action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
+					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+					logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
+
+					last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
+						last_hidden_state[second_index_start].clone()
+					
+					acumulative_index+=1
+			elif(traj_size>self.rnn_sequence_length):
+				for sequence_index in range(0,math.floor(traj_size/self.rnn_sequence_length)):
+					#np.concatenate([obs,past_action], axis=-1)
+					first_index_start = acumulative_index*self.num_envs
+					first_index_end = (acumulative_index+1)*self.num_envs
+					second_index_start = traj_start+sequence_index*self.rnn_sequence_length
+					second_index_end = traj_start+(sequence_index+1)*self.rnn_sequence_length
+
+					obs_past_act_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = \
+					torch.cat([obs[second_index_start:second_index_end],
+							   past_action[second_index_start:second_index_end]], dim=-1)
+
+					action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
+					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+					logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
+
+					last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
+						last_hidden_state[second_index_start].clone()
+
+					acumulative_index+=1
+
+				first_index_start = acumulative_index*self.num_envs
+				first_index_end = (acumulative_index+1)*self.num_envs
+				second_index_start = traj_end-self.rnn_sequence_length
+				second_index_end = traj_end
+				
+				obs_past_act_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = \
+				torch.cat([obs[second_index_start:second_index_end],
+						   past_action[second_index_start:second_index_end]], dim=-1)
+
+				action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
+				adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+				logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
+
+				last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
+					last_hidden_state[second_index_start].clone()
+
+				acumulative_index+=1
+			else: 
+				print("Actor trajectory discarted! It is smaller than the squence length!")
+
+
+			#Shuffle the trajectory, Good for training
+			perm_a = np.arange(obs_past_act_actor.shape[1])
+			np.random.shuffle(perm_a)
+			perm_a = torch.LongTensor(perm_a).to(self.dvc)
+
+			obs_past_act_actor = obs_critic[:,perm_a,:]
+			action_actor = action_critic[:,perm_a,:]
+			adv_actor = adv_critic[:,perm_a,:]
+			logprob_a_actor = logprob_a_actor[:,perm_a,:]
+			last_hidden_state_actor = last_hidden_state_actor[:,perm_a,:]
 
 		"""Slice long trajectopy into short trajectory and perform mini-batch PPO update"""
-		a_optim_iter_num = int(math.ceil(obs.shape[0] / self.a_optim_batch_size))
-		c_optim_iter_num = int(math.ceil(obs.shape[0] / self.c_optim_batch_size))
+		#####
+		a_optim_iter_num = int(math.ceil(obs_past_act_actor.shape[1] / self.a_optim_batch_size))
+		#####
+		c_optim_iter_num = int(math.ceil(obs_critic.shape[0] / self.c_optim_batch_size))
 
 		for i in range(self.K_epochs):
 
 			#Shuffle the trajectory, Good for training
-			perm = np.arange(obs.shape[0])
-			np.random.shuffle(perm)
-			perm = torch.LongTensor(perm).to(self.dvc)
-			#obs, action, td_target, adv, logprob_a = \
-			#	obs[perm].clone(), action[perm].clone(), td_target[perm].clone(), adv[perm].clone(), logprob_a[perm].clone()
-
-			obs = obs[perm]
-			action = action[perm]
-			td_target = td_target[perm]
-			adv = adv[perm]
-			logprob_a = logprob_a[perm]
 
 			'''update the actor'''
 			for i in range(a_optim_iter_num):
-				index = slice(i * self.a_optim_batch_size, min((i + 1) * self.a_optim_batch_size, obs.shape[0]))
-				distribution = self.actor.get_dist(obs[index])
-				dist_entropy = distribution.entropy().sum(1, keepdim=True)
-				logprob_a_now = distribution.log_prob(action[index])
-				ratio = torch.exp(logprob_a_now.sum(1,keepdim=True) - logprob_a[index].sum(1,keepdim=True))  # a/b == exp(log(a)-log(b))
+				index = slice(i * self.a_optim_batch_size, min((i + 1) * self.a_optim_batch_size, obs_past_act_actor.shape[1]))
+				distribution = self.actor.get_dist(obs_past_act_actor[:,index,:],last_hidden_state_actor[:,index,:])
+				dist_entropy = distribution.entropy().sum(dim=2, keepdim=True)
+				logprob_a_now = distribution.log_prob(action_actor[:,index,:])
+				ratio = torch.exp(logprob_a_now.sum(dim=2,keepdim=True) - logprob_a_actor[:,index,:].sum(dim=2,keepdim=True))  # a/b == exp(log(a)-log(b))
 
-				surr1 = ratio * adv[index]
-				surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv[index]
+				surr1 = ratio * adv_actor[:,index,:]
+				surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv_actor[:,index,:]
 				a_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
 				self.actor_optimizer.zero_grad()
@@ -488,10 +577,23 @@ class PPO_RNN_agent(object):
 				torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.clip_gradient_norm)
 				self.actor_optimizer.step()
 
+			#Shuffle the trajectory, Good for training
+			perm = np.arange(obs_critic.shape[0])
+			np.random.shuffle(perm)
+			perm = torch.LongTensor(perm).to(self.dvc)
+			#obs, action, td_target, adv, logprob_a = \
+			#	obs[perm].clone(), action[perm].clone(), td_target[perm].clone(), adv[perm].clone(), logprob_a[perm].clone()
+
+			obs_critic = obs_critic[perm]
+			action_critic = action_critic[perm]
+			td_target_critic = td_target_critic[perm]
+			adv_critic = adv_critic[perm]
+			logprob_a_critic = logprob_a_critic[perm]
+
 			'''update the critic'''
 			for i in range(c_optim_iter_num):
-				index = slice(i * self.c_optim_batch_size, min((i + 1) * self.c_optim_batch_size, obs.shape[0]))
-				c_loss = (self.critic(obs[index]) - td_target[index]).pow(2).mean()
+				index = slice(i * self.c_optim_batch_size, min((i + 1) * self.c_optim_batch_size, obs_critic.shape[0]))
+				c_loss = (self.critic(obs_critic[index]) - td_target_critic[index]).pow(2).mean()
 				for name,param in self.critic.named_parameters():
 					if 'weight' in name:
 						c_loss += param.pow(2).sum() * self.l2_reg
