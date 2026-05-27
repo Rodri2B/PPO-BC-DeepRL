@@ -193,9 +193,9 @@ def main():
     
     if opt.render:
         while True:
-            last_hidden_state_eval=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
-            past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
-            ep_r = evaluate_policy_rnn(env, agent, device, env_min_action,env_amplitude_action, 1,past_action_eval,last_hidden_state_eval,seed_number=seed_number,e_seed=env_seed)
+            #last_hidden_state_eval=np.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim),dtype=np.float32)
+            #past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
+            ep_r = evaluate_policy_rnn(env, agent, device, env_min_action,env_amplitude_action, 1,first_p_act_dim=[opt.num_envs,opt.action_dim] ,h_0_dim=[opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim],seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
 #####################################
     else:
@@ -218,7 +218,7 @@ def main():
         while total_steps < opt.Max_train_steps:
             obs, info = envs.reset(seed=env_seed) # Do not use opt.seed directly, or it can overfit to opt.seed
 
-            last_hidden_state=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
+            last_hidden_state=np.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim),dtype=np.float32)
             past_action=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
 
             if (traj_lenth > 0):trajectory_hist.append(traj_lenth)
@@ -336,9 +336,9 @@ def main():
 ##############################################
                 '''Record & log'''
                 if total_steps % opt.eval_interval == 0:
-                    last_hidden_state_eval=torch.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_dim),dtype=torch.float32,device='cpu')
-                    past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
-                    avg_ep_reward = evaluate_policy_rnn(eval_env, agent,device, env_min_action,env_amplitude_action, episodes_num=opt.evaluation_rollouts_num,first_p_act=past_action_eval ,h_0=last_hidden_state_eval , seed_number=seed_number,e_seed=env_seed)  # evaluate the policy for 3 times, and get averaged result
+                    #last_hidden_state_eval=np.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim),dtype=np.float32)
+                    #past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32) 
+                    avg_ep_reward = evaluate_policy_rnn(eval_env, agent,device, env_min_action,env_amplitude_action, episodes_num=opt.evaluation_rollouts_num,first_p_act_dim=[opt.num_envs,opt.action_dim] ,h_0_dim=[opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim] , seed_number=seed_number,e_seed=env_seed)  # evaluate the policy for 3 times, and get averaged result
                     if opt.write: writer.add_scalar('ep_r', avg_ep_reward, global_step=total_steps)
                     print(' EnvName:',EnvName[opt.EnvIdex],'seed:',opt.seed,'steps: {}k'.format(int(total_steps/1000)),'avg episode rw:', avg_ep_reward)
 

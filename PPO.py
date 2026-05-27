@@ -341,7 +341,7 @@ class PPO_RNN_agent(object):
 
 		# Choose distribution for the actor
 		if self.Distribution == 'Beta':
-			self.actor = RNNBetaActor(self.state_dim, self.action_dim, self.hidden_size, self.rnn_num_layers).to(self.dvc)
+			self.actor = RNNBetaActor(self.state_dim, self.action_dim, self.hidden_state_dim, self.rnn_layers_num).to(self.dvc)
 		#elif self.Distribution == 'GS_ms':
 		#	self.actor = GaussianActor_musigma(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
 		#elif self.Distribution == 'GS_m':
@@ -375,19 +375,20 @@ class PPO_RNN_agent(object):
 		self.termination_hoder = np.zeros((self.T_horizon, self.num_envs, 1),dtype=np.bool_)
 
 
-	def select_action(self, state_past_action,last_hiden, deterministic):
+	def select_action(self, state_past_action,last_hidden, deterministic):
 		with torch.no_grad():
 			#state = torch.FloatTensor(state.reshape(1, -1)).to(self.dvc)
 			state_past_action = torch.FloatTensor(state_past_action).unsqueeze(0).to(self.dvc)
+			last_hidden = torch.FloatTensor(last_hidden).to(self.dvc)
 			if deterministic:
 				# only used when evaluate the policy.Making the performance more stable
-				action = self.actor.deterministic_act(state_past_action,last_hiden)
+				action, hidden_state = self.actor.deterministic_act(state_past_action,last_hidden)
 				#return action.cpu().numpy()[0], None  # action is in shape (adim, 0)
-				return action.cpu().numpy(), None # (num_envs, action_dim)
+				return action.cpu().numpy(), None, hidden_state.cpu().numpy() # (num_envs, action_dim)
 
 			else:
 				# only used when interact with the env
-				dist, hidden_state = self.actor.get_dist(state_past_action,last_hiden)
+				dist, hidden_state = self.actor.get_dist(state_past_action,last_hidden)
 				action = dist.sample()
 				action = torch.clamp(action, 0, 1) #remove if needed
 				#logprob_a = dist.log_prob(action).cpu().numpy().flatten()
@@ -458,17 +459,21 @@ class PPO_RNN_agent(object):
 		# Pre-Allocate Memory
 		acumulative_index=0
 		for traj_index in range(0,len(trajectory_hist)):
+			traj_start = trajectory_hist[traj_index]
+			traj_end = trajectory_hist[traj_index+1] if (traj_index < (len(trajectory_hist)-1)) else self.T_horizon
+			traj_size = traj_end-traj_start
+
 			if(traj_size%self.rnn_sequence_length==0 and traj_size>=self.rnn_sequence_length):
-				acumulative_index+=traj_size/self.rnn_sequence_length
+				acumulative_index+=traj_size//self.rnn_sequence_length
 			elif(traj_size>self.rnn_sequence_length):
-				acumulative_index+=math.floor(traj_size/self.rnn_sequence_length)+1
+				acumulative_index+=traj_size//self.rnn_sequence_length+1
 		acumulative_index*=self.num_envs
 
-		obs_past_act_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.state_dim+self.action_dim),dtype=torch.float32,device=self.dvc)
-		action_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
-		adv_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,1),dtype=torch.float32,device=self.dvc)
-		logprob_a_actor = torch.zeros(shape=(self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
-		last_hidden_state_actor = torch.zeros(shape=(self.rnn_layers_num,acumulative_index,self.hidden_state_dim),dtype=torch.float32,device=self.dvc)
+		obs_past_act_actor = torch.zeros((self.rnn_sequence_length,acumulative_index,self.state_dim+self.action_dim),dtype=torch.float32,device=self.dvc)
+		action_actor = torch.zeros((self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
+		adv_actor = torch.zeros((self.rnn_sequence_length,acumulative_index,1),dtype=torch.float32,device=self.dvc)
+		logprob_a_actor = torch.zeros((self.rnn_sequence_length,acumulative_index,self.action_dim),dtype=torch.float32,device=self.dvc)
+		last_hidden_state_actor = torch.zeros((self.rnn_layers_num,acumulative_index,self.hidden_state_dim),dtype=torch.float32,device=self.dvc)
 
 		# For Actor
 		acumulative_index=0
@@ -478,7 +483,7 @@ class PPO_RNN_agent(object):
 			traj_size = traj_end-traj_start
 
 			if(traj_size%self.rnn_sequence_length==0 and traj_size>=self.rnn_sequence_length):
-				for sequence_index in range(0,traj_size/self.rnn_sequence_length):
+				for sequence_index in range(0,traj_size//self.rnn_sequence_length):
 					#np.concatenate([obs,past_action], axis=-1)
 					first_index_start = acumulative_index*self.num_envs
 					first_index_end = (acumulative_index+1)*self.num_envs
@@ -490,7 +495,7 @@ class PPO_RNN_agent(object):
 							   past_action[second_index_start:second_index_end]], dim=-1)
 
 					action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
-					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = adv[second_index_start:second_index_end].clone()
 					logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
 
 					last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
@@ -498,7 +503,7 @@ class PPO_RNN_agent(object):
 					
 					acumulative_index+=1
 			elif(traj_size>self.rnn_sequence_length):
-				for sequence_index in range(0,math.floor(traj_size/self.rnn_sequence_length)):
+				for sequence_index in range(0,traj_size//self.rnn_sequence_length):
 					#np.concatenate([obs,past_action], axis=-1)
 					first_index_start = acumulative_index*self.num_envs
 					first_index_end = (acumulative_index+1)*self.num_envs
@@ -510,7 +515,7 @@ class PPO_RNN_agent(object):
 							   past_action[second_index_start:second_index_end]], dim=-1)
 
 					action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
-					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+					adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = adv[second_index_start:second_index_end].clone()
 					logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
 
 					last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
@@ -528,7 +533,7 @@ class PPO_RNN_agent(object):
 						   past_action[second_index_start:second_index_end]], dim=-1)
 
 				action_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = action[second_index_start:second_index_end].clone()
-				adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,1] = adv[second_index_start:second_index_end].clone()
+				adv_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = adv[second_index_start:second_index_end].clone()
 				logprob_a_actor[0:self.rnn_sequence_length,first_index_start:first_index_end,:] = logprob_a[second_index_start:second_index_end].clone()
 
 				last_hidden_state_actor[0:self.rnn_layers_num,first_index_start:first_index_end,:] = \
@@ -544,9 +549,9 @@ class PPO_RNN_agent(object):
 			np.random.shuffle(perm_a)
 			perm_a = torch.LongTensor(perm_a).to(self.dvc)
 
-			obs_past_act_actor = obs_critic[:,perm_a,:]
-			action_actor = action_critic[:,perm_a,:]
-			adv_actor = adv_critic[:,perm_a,:]
+			obs_past_act_actor = obs_past_act_actor[:,perm_a,:]
+			action_actor = action_actor[:,perm_a,:]
+			adv_actor = adv_actor[:,perm_a,:]
 			logprob_a_actor = logprob_a_actor[:,perm_a,:]
 			last_hidden_state_actor = last_hidden_state_actor[:,perm_a,:]
 
@@ -563,7 +568,7 @@ class PPO_RNN_agent(object):
 			'''update the actor'''
 			for i in range(a_optim_iter_num):
 				index = slice(i * self.a_optim_batch_size, min((i + 1) * self.a_optim_batch_size, obs_past_act_actor.shape[1]))
-				distribution = self.actor.get_dist(obs_past_act_actor[:,index,:],last_hidden_state_actor[:,index,:])
+				distribution, last_h_st = self.actor.get_dist(obs_past_act_actor[:,index,:],last_hidden_state_actor[:,index,:])
 				dist_entropy = distribution.entropy().sum(dim=2, keepdim=True)
 				logprob_a_now = distribution.log_prob(action_actor[:,index,:])
 				ratio = torch.exp(logprob_a_now.sum(dim=2,keepdim=True) - logprob_a_actor[:,index,:].sum(dim=2,keepdim=True))  # a/b == exp(log(a)-log(b))
@@ -621,16 +626,16 @@ class PPO_RNN_agent(object):
 		self.termination_hoder[idx] = termination
 
 	def save(self,EnvName, timestep):
-		torch.save(self.actor.state_dict(), "./model/{}_actor{}.pth".format(EnvName,timestep))
-		torch.save(self.critic.state_dict(), "./model/{}_q_critic{}.pth".format(EnvName,timestep))
+		torch.save(self.actor.state_dict(), "./model/{}_actor{}_rnn.pth".format(EnvName,timestep))
+		torch.save(self.critic.state_dict(), "./model/{}_q_critic{}_rnn.pth".format(EnvName,timestep))
 
 	def load(self,EnvName, timestep=None):
 		if timestep != None:
-			self.actor.load_state_dict(torch.load("./model/{}_actor{}.pth".format(EnvName, timestep), map_location=self.dvc))
-			self.critic.load_state_dict(torch.load("./model/{}_q_critic{}.pth".format(EnvName, timestep), map_location=self.dvc))
+			self.actor.load_state_dict(torch.load("./model/{}_actor{}_rnn.pth".format(EnvName, timestep), map_location=self.dvc))
+			self.critic.load_state_dict(torch.load("./model/{}_q_critic{}_rnn.pth".format(EnvName, timestep), map_location=self.dvc))
 		else:
-			self.actor.load_state_dict(torch.load("./model/{}_actor.pth".format(EnvName), map_location=self.dvc))
-			self.critic.load_state_dict(torch.load("./model/{}_q_critic.pth".format(EnvName), map_location=self.dvc))
+			self.actor.load_state_dict(torch.load("./model/{}_actor_rnn.pth".format(EnvName), map_location=self.dvc))
+			self.critic.load_state_dict(torch.load("./model/{}_q_critic_rnn.pth".format(EnvName), map_location=self.dvc))
 
 class PPO_expert_agent(object):
 

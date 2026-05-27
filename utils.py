@@ -36,7 +36,7 @@ class BetaActor(nn.Module):
 
 class RNNBetaActor(nn.Module):
 	def __init__(self, state_dim, action_dim, hidden_size,num_layers=2):
-		super(BetaActor, self).__init__()
+		super(RNNBetaActor, self).__init__()
 
         # GRU layer
 		self.gru = nn.GRU(input_size=state_dim+action_dim,
@@ -49,7 +49,7 @@ class RNNBetaActor(nn.Module):
 		self.beta_head = nn.Linear(hidden_size, action_dim)
 
 	def forward(self, state_past_action,last_hiden):
-		gru_out, h_n = self.gru(input=state_past_action,h_0=last_hiden)
+		gru_out, h_n = self.gru(input=state_past_action,hx=last_hiden)
 		# Take output from last time step
 		last_output = gru_out[:, :, :]
 
@@ -64,9 +64,9 @@ class RNNBetaActor(nn.Module):
 		return dist, hidden_state
 
 	def deterministic_act(self, state_past_action, last_hiden):
-		alpha, beta, _ = self.forward(state_past_action, last_hiden)
+		alpha, beta, hidden_state = self.forward(state_past_action, last_hiden)
 		mode = (alpha) / (alpha + beta)
-		return mode
+		return mode, hidden_state
 
 class GaussianActor_musigma(nn.Module):
 	def __init__(self, state_dim, action_dim, net_width):
@@ -184,25 +184,26 @@ def evaluate_policy(env, agent,device, min_action,amplitude_action, episodes_num
 
 import numpy as np
 
-def evaluate_policy_rnn(env, agent,device, min_action,amplitude_action, episodes_num,first_p_act,h_0,seed_number=None,e_seed=None):
+def evaluate_policy_rnn(env, agent,device, min_action,amplitude_action, episodes_num,first_p_act_dim,h_0_dim,seed_number=None,e_seed=None):
 	total_scores = 0
 	for j in range(episodes_num):
 		
-		last_hidden_state=h_0
-		past_action=first_p_act
+		last_hidden_state=np.zeros(shape=(h_0_dim[0],1,h_0_dim[2]),dtype=np.float32)
+		past_action=np.full(fill_value=0.5,shape=(1,first_p_act_dim[1]),dtype=np.float32)
 
 		obs, info = env.reset() if (seed_number==None) else (env.reset()if (e_seed==None) else env.reset(seed=random.randint(e_seed,e_seed+seed_number-1)))
+		obs = obs[None, :]
 		done = False
 		while not done:
 			state_past_action = np.concatenate([obs,past_action], axis=-1)
 			action_v, logprob_a, hidden_state = agent.select_action(state_past_action,last_hidden_state, deterministic=True) # Take deterministic actions when evaluation
 			action = action_v[-1,:,:]
 			act = Action_adapter(action, min_action,amplitude_action)  # [0,1] to [-max,max]
-			next_obs, reward, termination, truncation, info = env.step(act)
+			next_obs, reward, termination, truncation, info = env.step(act[0,:])
 			done = (termination or truncation)
 
 			total_scores += reward
-			obs = next_obs
+			obs = next_obs[None, :]
 			past_action = action
 			last_hidden_state = hidden_state
 
