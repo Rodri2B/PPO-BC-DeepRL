@@ -48,8 +48,8 @@ class RNNBetaActor(nn.Module):
 		self.alpha_head = nn.Linear(hidden_size, action_dim)
 		self.beta_head = nn.Linear(hidden_size, action_dim)
 
-	def forward(self, state_past_action,last_hiden):
-		gru_out, h_n = self.gru(input=state_past_action,hx=last_hiden)
+	def forward(self, state_past_action,last_hidden):
+		gru_out, h_n = self.gru(input=state_past_action,hx=last_hidden)
 		# Take output from last time step
 		last_output = gru_out[:, :, :]
 
@@ -58,15 +58,16 @@ class RNNBetaActor(nn.Module):
 
 		return alpha,beta,h_n
 
-	def get_dist(self,state_past_action,last_hiden):
-		alpha,beta,hidden_state = self.forward(state_past_action, last_hiden)
+	def get_dist(self,state_past_action,last_hidden):
+		alpha,beta,hidden_state = self.forward(state_past_action, last_hidden)
 		dist = Beta(alpha, beta)
 		return dist, hidden_state
 
-	def deterministic_act(self, state_past_action, last_hiden):
-		alpha, beta, hidden_state = self.forward(state_past_action, last_hiden)
+	def deterministic_act(self, state_past_action, last_hidden):
+		alpha, beta, hidden_state = self.forward(state_past_action, last_hidden)
 		mode = (alpha) / (alpha + beta)
 		return mode, hidden_state
+	
 
 class GaussianActor_musigma(nn.Module):
 	def __init__(self, state_dim, action_dim, net_width):
@@ -93,6 +94,37 @@ class GaussianActor_musigma(nn.Module):
 		mu, sigma = self.forward(state)
 		return mu
 
+class RNNGaussianActor_musigma(nn.Module):
+	def __init__(self, state_dim, action_dim, hidden_size,num_layers=2):
+		super(RNNGaussianActor_musigma, self).__init__()
+
+        # GRU layer
+		self.gru = nn.GRU(input_size=state_dim+action_dim,
+		                  hidden_size=hidden_size,
+		                  num_layers=num_layers,
+		                  batch_first=False)
+
+
+		self.mu_head = nn.Linear(hidden_size, action_dim)
+		self.sigma_head = nn.Linear(hidden_size, action_dim)
+
+	def forward(self, state_past_action,last_hidden):
+		gru_out, h_n = self.gru(input=state_past_action,hx=last_hidden)
+		# Take output from last time step
+		last_output = gru_out[:, :, :]
+
+		mu = torch.sigmoid(self.mu_head(last_output))
+		sigma = F.softplus( self.sigma_head(last_output) ) + 1e-6
+		return mu,sigma,h_n
+
+	def get_dist(self, state_past_action,last_hidden):
+		mu,sigma,hidden_state = self.forward(state_past_action, last_hidden)
+		dist = Normal(mu,sigma)
+		return dist, hidden_state
+
+	def deterministic_act(self, state_past_action, last_hidden):
+		mu, sigma, hidden_state = self.forward(state_past_action, last_hidden)
+		return mu, hidden_state
 
 class GaussianActor_mu(nn.Module):
 	def __init__(self, state_dim, action_dim, net_width, log_std=0):
@@ -122,6 +154,42 @@ class GaussianActor_mu(nn.Module):
 
 	def deterministic_act(self, state):
 		return self.forward(state)
+
+class RNNGaussianActor_mu(nn.Module):
+	def __init__(self, state_dim, action_dim, hidden_size,num_layers=2, log_std=0):
+		super(RNNGaussianActor_mu, self).__init__()
+
+        # GRU layer
+		self.gru = nn.GRU(input_size=state_dim+action_dim,
+		                  hidden_size=hidden_size,
+		                  num_layers=num_layers,
+		                  batch_first=False)
+
+
+		self.mu_head = nn.Linear(hidden_size, action_dim)
+		self.mu_head.weight.data.mul_(0.1)
+		self.mu_head.bias.data.mul_(0.0)
+
+		self.action_log_std = nn.Parameter(torch.ones(1, action_dim) * log_std)
+
+	def forward(self, state_past_action,last_hidden):
+		gru_out, h_n = self.gru(input=state_past_action,hx=last_hidden)
+		# Take output from last time step
+		last_output = gru_out[:, :, :]
+
+		mu = torch.sigmoid(self.mu_head(last_output))
+		return mu, h_n
+
+	def get_dist(self, state_past_action,last_hidden):
+		mu, hidden_state = self.forward(state_past_action,last_hidden)
+		action_log_std = self.action_log_std.expand_as(mu)
+		action_std = torch.exp(action_log_std)
+
+		dist = Normal(mu, action_std)
+		return dist, hidden_state
+
+	def deterministic_act(self, state_past_action,last_hidden):
+		return self.forward(state_past_action,last_hidden)
 
 
 class Critic(nn.Module):

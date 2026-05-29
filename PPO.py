@@ -1,4 +1,4 @@
-from utils import BetaActor, GaussianActor_musigma, GaussianActor_mu, Critic, RNNBetaActor
+from utils import BetaActor, GaussianActor_musigma, GaussianActor_mu, Critic, RNNBetaActor, RNNGaussianActor_musigma, RNNGaussianActor_mu
 import numpy as np
 import copy
 import torch
@@ -342,10 +342,10 @@ class PPO_RNN_agent(object):
 		# Choose distribution for the actor
 		if self.Distribution == 'Beta':
 			self.actor = RNNBetaActor(self.state_dim, self.action_dim, self.hidden_state_dim, self.rnn_layers_num).to(self.dvc)
-		#elif self.Distribution == 'GS_ms':
-		#	self.actor = GaussianActor_musigma(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
-		#elif self.Distribution == 'GS_m':
-		#	self.actor = GaussianActor_mu(self.state_dim, self.action_dim, self.net_width).to(self.dvc)
+		elif self.Distribution == 'GS_ms':
+			self.actor = RNNGaussianActor_musigma(self.state_dim, self.action_dim, self.hidden_state_dim, self.rnn_layers_num).to(self.dvc)
+		elif self.Distribution == 'GS_m':
+			self.actor = RNNGaussianActor_mu(self.state_dim, self.action_dim, self.hidden_state_dim, self.rnn_layers_num).to(self.dvc)
 		else: print('Dist Error')
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.a_lr)
 
