@@ -195,6 +195,16 @@ def main():
         while True:
             #last_hidden_state_eval=np.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim),dtype=np.float32)
             #past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
+
+            ## quantization ##
+            #model_int8 = agent
+            #model_int8.actor = torch.ao.quantization.quantize_dynamic(
+            #    agent.actor,                 # Your original actor model
+            #    {torch.nn.GRU, torch.nn.Linear},        # The specific layers to quantize
+            #    dtype=torch.qint8           # Target data type for weights
+            #)
+            ###################
+
             ep_r = evaluate_policy_rnn(env, agent, device, env_min_action,env_amplitude_action, 1,first_p_act_dim=[opt.num_envs,opt.action_dim] ,h_0_dim=[opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim],seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
 #####################################
