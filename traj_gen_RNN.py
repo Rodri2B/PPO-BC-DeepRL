@@ -184,14 +184,14 @@ def main():
             '''Write if its time'''
             if traj_lenth % opt.T_horizon == 0:
                 past_action = np.stack(first_past_action,expert.action_hoder[0:opt.T_horizon-1])
-                first_past_action = expert.action_hoder[opt.T_horizon]
+                first_past_action = expert.action_hoder[opt.T_horizon-1]
                 exp_traj = np.concatenate([expert.obs_hoder[0:opt.T_horizon],past_action[0:opt.T_horizon], expert.action_hoder[0:opt.T_horizon]], axis=-1)
                 #exp_traj = exp_traj.reshape(-1, exp_traj.shape[-1])
                 append_chunk(exp_traj,expt_traj_filename)
                 traj_lenth = 0
 
         if traj_lenth > 0:
-            past_action = np.stack(first_past_action,expert.action_hoder[0:traj_lenth-1])
+            past_action = np.stack(first_past_action,expert.action_hoder[0:traj_lenth-1]) if (traj_lenth>1) else first_past_action
             exp_traj = np.concatenate([expert.obs_hoder[0:traj_lenth], past_action[0:traj_lenth],expert.action_hoder[0:traj_lenth]], axis=-1)
             #print(exp_traj.shape)
             #exp_traj = exp_traj.reshape(-1, exp_traj.shape[-1])

@@ -262,6 +262,12 @@ def evaluate_policy_rnn(env, agent,device, min_action,amplitude_action, episodes
 		obs, info = env.reset() if (seed_number==None) else (env.reset()if (e_seed==None) else env.reset(seed=random.randint(e_seed,e_seed+seed_number-1)))
 		obs = obs[None, :]
 		done = False
+
+		#for fixture in env.unwrapped.lander.fixtures:
+		#	fixture.density = 10.0  # Change density
+		#
+		#env.unwrapped.lander.ResetMassData()
+
 		while not done:
 			state_past_action = np.concatenate([obs,past_action], axis=-1)
 			action_v, logprob_a, hidden_state = agent.select_action(state_past_action,last_hidden_state, deterministic=True) # Take deterministic actions when evaluation

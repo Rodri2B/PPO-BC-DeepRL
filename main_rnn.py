@@ -5,7 +5,8 @@ import torch
 import gymnasium as gym
 
 from utils import str2bool, Action_adapter, Reward_adapter, evaluate_policy_rnn
-from PPO import PPO_agent, PPO_expert_agent,BC_PPO_agent,PPO_RNN_agent
+from PPO import PPO_expert_agent
+from PPO_rnn import PPO_RNN_agent,BC_PPO_RNN_agent
 
 import numpy as np
 import random
@@ -120,8 +121,8 @@ def main():
     #     kwargs["c_lr"] *= 4
 
     if not os.path.exists('model'): os.mkdir('model')
-    agent = None if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt))
-    #agent = BC_PPO_RNN_agent(**vars(opt)) if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
+    #agent = None if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt))
+    agent = BC_PPO_RNN_agent(**vars(opt)) if (opt.bc_expert_model != None or opt.load_train_data) else PPO_RNN_agent(**vars(opt)) # transfer opt to dictionary, and use it to init PPO_agent
     if opt.Loadmodel: agent.load(BrifEnvName[opt.EnvIdex], opt.ModelIdex)
 
 
@@ -192,18 +193,23 @@ def main():
 
     
     if opt.render:
+
+        ## quantization ##
+        #model_int8 = agent
+        #model_int8.actor = torch.ao.quantization.quantize_dynamic(
+        #    agent.actor,                 # Your original actor model
+        #    {torch.nn.GRU, torch.nn.Linear},        # The specific layers to quantize
+        #    dtype=torch.qint8           # Target data type for weights
+        #)
+        ###################
+
+        #env.unwrapped.gravity = -1.62               # Lower gravity
+        #env.unwrapped.MAIN_ENGINE_POWER = 3.0     # Default is 13.0
+        #env.unwrapped.SIDE_ENGINE_POWER = 1.8      # Default is 0.6
+
         while True:
             #last_hidden_state_eval=np.zeros(shape=(opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim),dtype=np.float32)
             #past_action_eval=np.full(fill_value=0.5,shape=(opt.num_envs,opt.action_dim),dtype=np.float32)
-
-            ## quantization ##
-            #model_int8 = agent
-            #model_int8.actor = torch.ao.quantization.quantize_dynamic(
-            #    agent.actor,                 # Your original actor model
-            #    {torch.nn.GRU, torch.nn.Linear},        # The specific layers to quantize
-            #    dtype=torch.qint8           # Target data type for weights
-            #)
-            ###################
 
             ep_r = evaluate_policy_rnn(env, agent, device, env_min_action,env_amplitude_action, 1,first_p_act_dim=[opt.num_envs,opt.action_dim] ,h_0_dim=[opt.rnn_layers_num,opt.num_envs,opt.hidden_state_dim],seed_number=seed_number,e_seed=env_seed)
             print(f'Env:{EnvName[opt.EnvIdex]}, Episode Reward:{ep_r}')
