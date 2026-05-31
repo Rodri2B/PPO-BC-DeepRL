@@ -69,7 +69,7 @@ print(opt)
 
 def main():
     EnvName = ['Pendulum-v1','LunarLanderContinuous-v3','Humanoid-v5','HalfCheetah-v5','BipedalWalker-v3','BipedalWalkerHardcore-v3']
-    BrifEnvName = ['PV1', 'LLdV2', 'Humanv4', 'HCv4','BWv3', 'BWHv3']
+    BrifEnvName = ['PV1', 'LLdV3', 'Humanv5', 'HCv5','BWv3', 'BWHv3']
 
     # Build Env
     envs = gym.make_vec(EnvName[opt.EnvIdex],num_envs=opt.num_envs, vectorization_mode="sync")
